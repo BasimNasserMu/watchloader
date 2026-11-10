@@ -22,7 +22,6 @@ targets:
         # screen iOS runs the app letterboxed in legacy (iPhone 5-size) compatibility mode.
         UILaunchScreen:
           UIImageRespectsSafeAreaInsets: false
-          UIColorName: ""
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         UIRequiresFullScreen: true
