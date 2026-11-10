@@ -17,7 +17,7 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: WatchLoader
-        CFBundleShortVersionString: "0.4.1"
+        CFBundleShortVersionString: "0.4.2"
         # Non-empty on purpose: some re-signers drop empty dicts, and without a launch
         # screen iOS runs the app letterboxed in legacy (iPhone 5-size) compatibility mode.
         UILaunchScreen:
@@ -31,6 +31,7 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         PRODUCT_NAME: WatchLoader
         PRODUCT_BUNDLE_IDENTIFIER: io.github.basimnassermu.watchloader
         TARGETED_DEVICE_FAMILY: "1"
