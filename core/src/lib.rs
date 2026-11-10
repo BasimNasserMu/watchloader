@@ -19,7 +19,7 @@ use idevice::heartbeat::HeartbeatClient;
 use idevice::lockdown::LockdownClient;
 use idevice::pairing_file::PairingFile;
 use idevice::provider::{IdeviceProvider, TcpProvider};
-use idevice::{Idevice, IdeviceError, IdeviceService, ReadWrite};
+use idevice::{Idevice, IdeviceError, IdeviceService};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
@@ -74,9 +74,6 @@ impl IdeviceService for ZipConduit {
     }
     async fn from_stream(idevice: Idevice) -> Result<Self, IdeviceError> {
         Ok(Self { idevice })
-    }
-    fn get_socket(&mut self) -> Option<&mut Box<dyn ReadWrite>> {
-        None
     }
 }
 
