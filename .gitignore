@@ -1,0 +1,12 @@
+core/target/
+build/
+Payload/
+dist/
+*.ipa
+*.xcodeproj/
+# never commit pairing records or signing material
+*.plist
+!App/**/*.plist
+*.p12
+*.mobileprovision
+*.mobiledevicepairing

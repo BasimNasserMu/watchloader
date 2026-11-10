@@ -1,0 +1,22 @@
+[package]
+name = "wlcore"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "WatchLoader core: install apps on an Apple Watch from its paired iPhone"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+idevice = { version = "=0.1.68", default-features = false, features = ["ring", "tcp", "heartbeat", "companion_proxy"] }
+tokio = { version = "1", features = ["rt", "net", "time", "sync", "macros"] }
+plist = "1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
