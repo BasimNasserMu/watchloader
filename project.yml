@@ -17,8 +17,15 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: WatchLoader
-        CFBundleShortVersionString: "0.4"
-        UILaunchScreen: {}
+        CFBundleShortVersionString: "0.4.1"
+        # Non-empty on purpose: some re-signers drop empty dicts, and without a launch
+        # screen iOS runs the app letterboxed in legacy (iPhone 5-size) compatibility mode.
+        UILaunchScreen:
+          UIImageRespectsSafeAreaInsets: false
+          UIColorName: ""
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIRequiresFullScreen: true
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         NSLocalNetworkUsageDescription: WatchLoader talks to this iPhone and its paired Apple Watch to install watch apps.
