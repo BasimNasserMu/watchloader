@@ -1,4 +1,6 @@
+import Darwin
 import SwiftUI
+import UIKit
 
 @main
 struct WatchLoaderApp: App {
@@ -34,6 +36,41 @@ final class Loader: ObservableObject {
 
     func say(_ s: String) {
         DispatchQueue.main.async { self.log.append(s) }
+    }
+
+    /// IPv4 addresses of every interface (en0 = Wi-Fi, utunN = VPN tunnels, bridge = hotspot).
+    static func interfaces() -> [String] {
+        var out: [String] = []
+        var ifap: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifap) == 0, let first = ifap else { return out }
+        defer { freeifaddrs(ifap) }
+        for p in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            guard let sa = p.pointee.ifa_addr, sa.pointee.sa_family == UInt8(AF_INET) else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(sa, socklen_t(sa.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
+                out.append("\(String(cString: p.pointee.ifa_name)) \(String(cString: host))")
+            }
+        }
+        return out
+    }
+
+    func diagnose() {
+        guard !busy else { return }
+        guard hasPhonePairing else { log.append("⚠️ Missing phone.plist in Documents"); return }
+        busy = true
+        log.append("Diagnose — interfaces: " + Loader.interfaces().joined(separator: ", "))
+        var candidates = [phoneIP, "10.7.0.1", "10.7.0.2"]
+        candidates = candidates.reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
+        let addrs = candidates.joined(separator: ","), phone = phonePairing.path
+        DispatchQueue.global(qos: .userInitiated).async {
+            var buf = [CChar](repeating: 0, count: 8192)
+            _ = wl_diagnose(addrs, phone, &buf, buf.count)
+            let report = String(cString: buf)
+            DispatchQueue.main.async {
+                self.log.append(contentsOf: report.split(separator: "\n").map(String.init))
+                self.busy = false
+            }
+        }
     }
 
     func probe() {
@@ -104,6 +141,13 @@ struct ContentView: View {
                         loader.probe()
                     }
                     .disabled(loader.busy)
+                    Button("Diagnose iPhone link", systemImage: "stethoscope") {
+                        loader.diagnose()
+                    }
+                    .disabled(loader.busy)
+                    Button("Copy log", systemImage: "doc.on.doc") {
+                        UIPasteboard.general.string = loader.log.joined(separator: "\n")
+                    }
                 }
 
                 Section("Watch apps in Documents") {

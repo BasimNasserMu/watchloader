@@ -17,6 +17,7 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: WatchLoader
+        CFBundleShortVersionString: "0.2"
         UILaunchScreen: {}
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true

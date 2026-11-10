@@ -10,6 +10,10 @@ extern "C" {
 
 typedef void (*wl_progress_cb)(void *ctx, const char *status, int32_t percent);
 
+/// Step-by-step connectivity report (TCP, lockdown, TLS session, heartbeat) for each
+/// comma-separated address. Always returns 0; the report is written into `out`.
+int32_t wl_diagnose(const char *addresses, const char *phone_pairing, char *out, size_t out_len);
+
 /// Connect to the iPhone (via loopback VPN) and through it to the paired watch.
 /// Writes a human-readable result or error into `out`. Returns 0 on success.
 int32_t wl_probe(const char *phone_ip, const char *phone_pairing, const char *watch_pairing,

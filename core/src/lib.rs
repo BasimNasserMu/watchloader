@@ -25,8 +25,77 @@ use tokio::sync::Mutex;
 
 type Res<T> = Result<T, String>;
 
-fn e<E: std::fmt::Display>(ctx: &'static str) -> impl FnOnce(E) -> String {
-    move |err| format!("{ctx}: {err}")
+fn e<E: std::fmt::Display + std::fmt::Debug>(ctx: &'static str) -> impl FnOnce(E) -> String {
+    // Debug shows the underlying io::Error kind (ConnectionRefused, TimedOut, ...).
+    move |err| format!("{ctx}: {err} [{err:?}]")
+}
+
+/// Step-by-step connectivity check against one address. Never fails; returns a report.
+async fn diagnose_one(ip: &str, phone_pairing: &str) -> String {
+    use std::time::Duration;
+    let mut r = format!("== {ip} ==\n");
+    let addr: IpAddr = match ip.parse() {
+        Ok(a) => a,
+        Err(err) => return r + &format!("  bad address: {err}\n"),
+    };
+    let pf = match PairingFile::read_from_file(phone_pairing) {
+        Ok(p) => p,
+        Err(err) => return r + &format!("  phone.plist unreadable: {err:?}\n"),
+    };
+
+    // 1. raw TCP
+    let stream = match tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(SocketAddr::new(addr, 62078))).await {
+        Ok(Ok(s)) => {
+            r += "  1 TCP :62078            OK\n";
+            s
+        }
+        Ok(Err(err)) => return r + &format!("  1 TCP :62078            FAIL {:?} ({err})\n", err.kind()),
+        Err(_) => return r + "  1 TCP :62078            FAIL timeout (5s)\n",
+    };
+
+    // 2. unauthenticated query
+    let mut ld = LockdownClient::new(Idevice::new(Box::new(stream), "watchloader"));
+    match tokio::time::timeout(Duration::from_secs(5), ld.get_value(Some("DeviceName"), None)).await {
+        Ok(Ok(v)) => r += &format!("  2 lockdown query        OK ({})\n", v.as_string().unwrap_or("?")),
+        Ok(Err(err)) => return r + &format!("  2 lockdown query        FAIL {err:?}\n"),
+        Err(_) => return r + "  2 lockdown query        FAIL timeout\n",
+    }
+
+    // 3. TLS session with the pairing record
+    let legacy = match tokio::time::timeout(Duration::from_secs(8), ld.start_session(&pf)).await {
+        Ok(Ok(l)) => {
+            r += "  3 pairing session (TLS) OK\n";
+            l
+        }
+        Ok(Err(err)) => return r + &format!("  3 pairing session (TLS) FAIL {err:?}\n"),
+        Err(_) => return r + "  3 pairing session (TLS) FAIL timeout\n",
+    };
+
+    // 4. heartbeat service
+    let (port, ssl) = match ld.start_service("com.apple.mobile.heartbeat").await {
+        Ok(x) => {
+            r += &format!("  4 start heartbeat       OK (port {}, ssl {})\n", x.0, x.1);
+            x
+        }
+        Err(err) => return r + &format!("  4 start heartbeat       FAIL {err:?}\n"),
+    };
+    let s = match tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(SocketAddr::new(addr, port))).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(err)) => return r + &format!("  5 heartbeat connect     FAIL {:?} ({err})\n", err.kind()),
+        Err(_) => return r + "  5 heartbeat connect     FAIL timeout\n",
+    };
+    let mut hb = Idevice::new(Box::new(s), "watchloader");
+    if ssl {
+        if let Err(err) = hb.start_session(&pf, legacy).await {
+            return r + &format!("  5 heartbeat TLS         FAIL {err:?}\n");
+        }
+    }
+    let mut hb = HeartbeatClient::new(hb);
+    match hb.get_marco(20).await {
+        Ok(i) => r += &format!("  5 heartbeat Marco       OK (interval {i}s) — iPhone link works\n"),
+        Err(err) => r += &format!("  5 heartbeat Marco       FAIL {err:?}\n"),
+    }
+    r
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -319,6 +388,29 @@ fn run<F: Future<Output = Res<String>>>(f: F) -> Res<String> {
         .build()
         .map_err(e("tokio runtime"))?
         .block_on(f)
+}
+
+/// Step-by-step connectivity report for each comma-separated address. Always returns 0.
+#[no_mangle]
+pub unsafe extern "C" fn wl_diagnose(
+    addresses: *const c_char,
+    phone_pairing: *const c_char,
+    out: *mut c_char,
+    out_len: usize,
+) -> i32 {
+    let r = (|| -> Res<String> {
+        let (addrs, pp) = (cstr(addresses)?, cstr(phone_pairing)?);
+        run(async move {
+            let mut report = String::new();
+            for a in addrs.split(',').map(str::trim).filter(|a| !a.is_empty()) {
+                report += &diagnose_one(a, pp).await;
+            }
+            Ok(report)
+        })
+    })();
+    let msg = r.unwrap_or_else(|m| m);
+    write_out(out, out_len, &msg);
+    0
 }
 
 /// Connect iPhone -> watch and report the watch name/version. Returns 0 on success.
