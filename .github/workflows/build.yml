@@ -47,6 +47,10 @@ jobs:
           cp -R build/Release-iphoneos/WatchLoader.app Payload/
           zip -qr WatchLoader.ipa Payload
           ls -l WatchLoader.ipa
+          echo "--- Info.plist sanity ---"
+          for k in CFBundleIdentifier CFBundleExecutable UIFileSharingEnabled LSSupportsOpeningDocumentsInPlace; do
+            printf "%s = " "$k"; /usr/libexec/PlistBuddy -c "Print :$k" Payload/WatchLoader.app/Info.plist
+          done
 
       - uses: actions/upload-artifact@v4
         if: always()
