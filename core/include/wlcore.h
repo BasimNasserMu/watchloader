@@ -19,6 +19,10 @@ int32_t wl_diagnose(const char *addresses, const char *phone_pairing, char *out,
 int32_t wl_probe(const char *phone_ip, const char *phone_pairing, const char *watch_pairing,
                  char *out, size_t out_len);
 
+/// Read an IPA's metadata (bundle name/id/version, profile ExpirationDate/TeamName/DeviceCount,
+/// IsWatchApp). Writes an XML plist into `out`. Returns 0 on success.
+int32_t wl_ipa_info(const char *ipa_path, char *out, size_t out_len);
+
 /// Install a watch-only IPA (Payload/<App>.app) on the paired Apple Watch.
 /// `cb` is called synchronously on the calling thread with progress updates.
 int32_t wl_install(const char *phone_ip, const char *phone_pairing, const char *watch_pairing,

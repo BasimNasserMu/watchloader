@@ -372,8 +372,98 @@ fn crc32(data: &[u8]) -> u32 {
 }
 
 // ---------------------------------------------------------------------------------------------
+// IPA metadata (name, version, provisioning profile expiry) for the app library
+// ---------------------------------------------------------------------------------------------
+
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
+fn ipa_info(path: &str) -> Res<plist::Dictionary> {
+    use plist::Value as V;
+    let file = std::fs::File::open(path).map_err(e("open IPA"))?;
+    let mut zip = zip::ZipArchive::new(file).map_err(e("read IPA"))?;
+    let info_name = zip
+        .file_names()
+        .find(|n| {
+            let p: Vec<&str> = n.split('/').collect();
+            p.len() == 3 && p[0] == "Payload" && p[1].ends_with(".app") && p[2] == "Info.plist"
+        })
+        .map(str::to_owned)
+        .ok_or("no Payload/<App>.app/Info.plist")?;
+    let app_dir = info_name.trim_end_matches("Info.plist").to_owned();
+
+    let mut buf = Vec::new();
+    zip.by_name(&info_name).map_err(e("Info.plist"))?.read_to_end(&mut buf).map_err(e("Info.plist"))?;
+    let info: plist::Dictionary = plist::from_bytes(&buf).map_err(e("parse Info.plist"))?;
+
+    let mut out = plist::Dictionary::new();
+    for k in [
+        "CFBundleDisplayName",
+        "CFBundleName",
+        "CFBundleIdentifier",
+        "CFBundleShortVersionString",
+        "CFBundleVersion",
+        "WKCompanionAppBundleIdentifier",
+        "MinimumOSVersion",
+    ] {
+        if let Some(v) = info.get(k) {
+            out.insert(k.into(), v.clone());
+        }
+    }
+    let family_watch = info
+        .get("UIDeviceFamily")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().any(|x| x.as_unsigned_integer() == Some(4)))
+        .unwrap_or(false);
+    let wk = info.get("WKApplication").and_then(|v| v.as_boolean()).unwrap_or(false)
+        || info.get("WKWatchKitApp").and_then(|v| v.as_boolean()).unwrap_or(false);
+    out.insert("IsWatchApp".into(), V::Boolean(wk || family_watch));
+
+    let prov_name = format!("{app_dir}embedded.mobileprovision");
+    if let Ok(mut f) = zip.by_name(&prov_name) {
+        let mut b = Vec::new();
+        if f.read_to_end(&mut b).is_ok() {
+            if let (Some(s), Some(end)) = (find(&b, b"<?xml"), find(&b, b"</plist>")) {
+                if let Ok(p) = plist::from_bytes::<plist::Dictionary>(&b[s..end + 8]) {
+                    for k in ["ExpirationDate", "CreationDate", "TeamName", "Name"] {
+                        if let Some(v) = p.get(k) {
+                            out.insert(k.into(), v.clone());
+                        }
+                    }
+                    let n = p.get("ProvisionedDevices").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                    out.insert("DeviceCount".into(), V::Integer((n as u64).into()));
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------------------------
 // C ABI
 // ---------------------------------------------------------------------------------------------
+
+/// Read an IPA's metadata. Writes an XML plist into `out`. Returns 0 on success.
+#[no_mangle]
+pub unsafe extern "C" fn wl_ipa_info(ipa_path: *const c_char, out: *mut c_char, out_len: usize) -> i32 {
+    let r = (|| -> Res<String> {
+        let d = ipa_info(cstr(ipa_path)?)?;
+        let mut buf = Vec::new();
+        plist::to_writer_xml(&mut buf, &plist::Value::Dictionary(d)).map_err(e("encode"))?;
+        String::from_utf8(buf).map_err(e("utf8"))
+    })();
+    match r {
+        Ok(m) => {
+            write_out(out, out_len, &m);
+            0
+        }
+        Err(m) => {
+            write_out(out, out_len, &m);
+            -1
+        }
+    }
+}
 
 pub type WlProgressCb = Option<extern "C" fn(ctx: *mut c_void, status: *const c_char, percent: i32)>;
 

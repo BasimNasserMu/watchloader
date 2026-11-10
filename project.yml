@@ -1,7 +1,7 @@
 name: WatchLoader
 options:
   deploymentTarget:
-    iOS: "17.0"
+    iOS: "26.0"
 settings:
   base:
     MARKETING_VERSION: "0.1"
@@ -17,7 +17,7 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: WatchLoader
-        CFBundleShortVersionString: "0.3"
+        CFBundleShortVersionString: "0.4"
         UILaunchScreen: {}
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true

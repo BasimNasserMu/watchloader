@@ -11,6 +11,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Liquid Glass APIs need the iOS 26 SDK (Xcode 26).
+      - name: Select Xcode 26
+        run: |
+          ls -d /Applications/Xcode*.app
+          XC=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XC" ]; then echo "::error::No Xcode 26 on this runner"; exit 1; fi
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
       - name: Rust toolchain (iOS target)
         run: |
           rustup toolchain install stable --profile minimal
@@ -39,6 +49,7 @@ jobs:
             -sdk iphoneos -configuration Release \
             SYMROOT="$PWD/build" CODE_SIGNING_ALLOWED=NO build 2>&1 \
             | tee build.log | grep -E "error:|\*\* BUILD" || true
+          grep -E "error:" build.log | sort -u | head -40 || true
           test -d build/Release-iphoneos/WatchLoader.app
 
       - name: Package IPA
