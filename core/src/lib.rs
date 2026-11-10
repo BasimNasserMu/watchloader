@@ -102,21 +102,32 @@ async fn diagnose_one(ip: &str, phone_pairing: &str) -> String {
 // Provider that reaches the *watch* by forwarding each port through the iPhone's companion proxy
 // ---------------------------------------------------------------------------------------------
 
+fn phone_provider(ip: IpAddr, pairing: &PairingFile) -> TcpProvider {
+    TcpProvider { addr: ip, scope_id: None, pairing_file: pairing.clone(), label: "watchloader".into() }
+}
+
 #[derive(Debug)]
 struct WatchProvider {
     phone_ip: IpAddr,
-    proxy: Arc<Mutex<CompanionProxy>>,
+    phone_pairing: PairingFile,
+    /// The iPhone only answers one companion_proxy command per connection, and a forward
+    /// lives as long as the connection that requested it — so each forward gets its own
+    /// connection, kept here until the session ends.
+    forwards: Arc<Mutex<Vec<CompanionProxy>>>,
     pairing: PairingFile,
     label: String,
 }
 
 impl IdeviceProvider for WatchProvider {
     fn connect(&self, port: u16) -> Pin<Box<dyn Future<Output = Result<Idevice, IdeviceError>> + Send>> {
-        let proxy = self.proxy.clone();
+        let phone = phone_provider(self.phone_ip, &self.phone_pairing);
+        let forwards = self.forwards.clone();
         let ip = self.phone_ip;
         let label = self.label.clone();
         Box::pin(async move {
-            let fwd = proxy.lock().await.start_forwarding_service_port(port, None, None).await?;
+            let mut proxy = CompanionProxy::connect(&phone).await?;
+            let fwd = proxy.start_forwarding_service_port(port, None, None).await?;
+            forwards.lock().await.push(proxy);
             let stream = TcpStream::connect(SocketAddr::new(ip, fwd)).await?;
             Ok(Idevice::new(Box::new(stream), label))
         })
@@ -161,7 +172,7 @@ async fn open_session(phone_ip: &str, phone_pairing: &str, watch_pairing: &str) 
     let phone_pf = PairingFile::read_from_file(phone_pairing).map_err(e("iPhone pairing file"))?;
     let watch_pf = PairingFile::read_from_file(watch_pairing).map_err(e("watch pairing file"))?;
 
-    let phone = TcpProvider { addr: ip, scope_id: None, pairing_file: phone_pf, label: "watchloader".into() };
+    let phone = phone_provider(ip, &phone_pf);
 
     // Keep Wi-Fi/loopback lockdown alive: the iPhone drops service connections without Marco/Polo.
     let mut hb = HeartbeatClient::connect(&phone)
@@ -182,13 +193,14 @@ async fn open_session(phone_ip: &str, phone_pairing: &str, watch_pairing: &str) 
         }
     });
 
-    let mut proxy = CompanionProxy::connect(&phone).await.map_err(e("companion_proxy"))?;
-    let watches = proxy.get_device_registry().await.map_err(e("watch registry"))?;
+    let mut registry = CompanionProxy::connect(&phone).await.map_err(e("companion_proxy"))?;
+    let watches = registry.get_device_registry().await.map_err(e("watch registry"))?;
     let watch_udid = watches.first().cloned().ok_or("iPhone reports no paired Apple Watch")?;
 
     let watch = WatchProvider {
         phone_ip: ip,
-        proxy: Arc::new(Mutex::new(proxy)),
+        phone_pairing: phone_pf,
+        forwards: Arc::new(Mutex::new(Vec::new())),
         pairing: watch_pf,
         label: "watchloader".into(),
     };
