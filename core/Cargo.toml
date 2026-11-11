@@ -13,6 +13,9 @@ idevice = { version = "=0.1.68", default-features = false, features = ["ring", "
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time", "sync", "macros", "fs"] }
 plist = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Several deps enable different rustls crypto backends; with more than one compiled in,
+# rustls panics on first use unless a process-wide provider is installed explicitly.
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
 
 # Apple ID login, developer services (devices / App IDs / profiles / certificates) and
 # code signing, from Impactor (plume_core is MPL-2.0, plume_utils/plume_store are MIT).
@@ -29,5 +32,5 @@ apple-codesign = { git = "https://github.com/claration/Impactor", rev = "b13d995
 opt-level = "s"
 lto = true
 codegen-units = 1
-panic = "abort"
-strip = true
+panic = "unwind"  # panics are caught in run() and reported instead of crashing
+strip = "debuginfo"  # keep symbol names for crash reports

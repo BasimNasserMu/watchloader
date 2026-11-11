@@ -576,15 +576,51 @@ unsafe fn write_out(out: *mut c_char, out_len: usize, msg: &str) {
     *out.add(n) = 0;
 }
 
+/// Where/what the most recent panic was (filled by the panic hook).
+static LAST_PANIC: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+fn install_panic_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // Pick ring explicitly: with ring and aws-lc-rs both compiled in (via different deps)
+        // rustls cannot choose a provider on its own and panics on the first TLS handshake.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        std::panic::set_hook(Box::new(|info| {
+            let msg = info
+                .payload()
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| info.payload().downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_else(|| "unknown panic".into());
+            let loc = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
+            let thread = std::thread::current().name().unwrap_or("?").to_owned();
+            if let Ok(mut last) = LAST_PANIC.lock() {
+                *last = format!("{msg} (at {loc}, thread {thread})");
+            }
+        }));
+    });
+}
+
+/// Run async work on a fresh runtime. Panics are caught and returned as errors instead of
+/// crashing the app (the crate is built with panic = "unwind" for this).
 fn run<F: Future<Output = Res<String>>>(f: F) -> Res<String> {
+    install_panic_hook();
     // multi-thread: Impactor's networking/signing code may spawn tasks; the main future
     // still runs on the calling thread, so callbacks fire there.
-    tokio::runtime::Builder::new_multi_thread()
+    let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
-        .map_err(e("tokio runtime"))?
-        .block_on(f)
+        .map_err(e("tokio runtime"))?;
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rt.block_on(f))) {
+        Ok(r) => r,
+        Err(_) => {
+            let detail = LAST_PANIC.lock().map(|s| s.clone()).unwrap_or_default();
+            // don't let the runtime's drop run inside a panicking context
+            std::mem::forget(rt);
+            Err(format!("internal error (panic): {detail}"))
+        }
+    }
 }
 
 /// Step-by-step connectivity report for each comma-separated address. Always returns 0.
