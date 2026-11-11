@@ -51,6 +51,42 @@ extension UTType {
     static let ipa = UTType(filenameExtension: "ipa") ?? .data
 }
 
+struct AppleAccount: Equatable {
+    let email: String
+    let name: String
+    let team: String
+}
+
+struct TwoFactorPrompt: Identifiable {
+    let id = UUID()
+    let viaSMS: Bool
+    let phones: String
+}
+
+/// Progress callback shared by install and re-sign (C function pointer, no captures).
+private let progressCallback: wl_progress_cb = { ctx, status, pct in
+    guard let ctx, let status else { return }
+    let me = Unmanaged<AppModel>.fromOpaque(ctx).takeUnretainedValue()
+    let text = String(cString: status)
+    DispatchQueue.main.async {
+        me.progress = Double(pct) / 100
+        me.status = text
+        me.add("  \(text) \(pct)%")
+    }
+}
+
+/// 2FA callback: runs on the worker thread and blocks until the user answers the alert.
+private let twoFactorCallback: wl_tfa_cb = { ctx, method, phones, out, len in
+    guard let ctx, let out, len > 1 else { return -1 }
+    let me = Unmanaged<AppModel>.fromOpaque(ctx).takeUnretainedValue()
+    let list = phones.map { String(cString: $0) } ?? ""
+    guard let code = me.waitForTwoFactor(viaSMS: method == 1, phones: list) else { return -1 }
+    let bytes = Array(code.utf8.prefix(len - 1))
+    for (i, b) in bytes.enumerated() { out[i] = CChar(bitPattern: b) }
+    out[bytes.count] = 0
+    return 0
+}
+
 // MARK: - App model
 
 /// Files live in the app's Documents folder (visible in the Files app and over USB):
@@ -76,8 +112,23 @@ final class AppModel {
     var interfaces: [String] = []
     var successTick = 0
     var failureTick = 0
+    var account: AppleAccount?
+    var twoFactor: TwoFactorPrompt?
+    var watchUDID: String = UserDefaults.standard.string(forKey: "watchUDID") ?? "" {
+        didSet { UserDefaults.standard.set(watchUDID, forKey: "watchUDID") }
+    }
+
+    @ObservationIgnored private var twoFactorAnswer: String?
+    @ObservationIgnored private let twoFactorSignal = DispatchSemaphore(value: 0)
 
     @ObservationIgnored let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    /// Private (not shown in Files): Apple ID token, signing key, anisette state.
+    var configDir: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("WatchLoader", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
     var phonePairing: URL { docs.appendingPathComponent("phone.plist") }
     var watchPairing: URL { docs.appendingPathComponent("watch.plist") }
 
@@ -199,6 +250,9 @@ final class AppModel {
             return (rc, String(cString: buf))
         } done: { ok, msg in
             self.probe = ok ? .ok(msg) : .failed(msg)
+            if ok, let line = msg.split(separator: "\n").first(where: { $0.hasPrefix("UDID ") }) {
+                self.watchUDID = String(line.dropFirst(5))
+            }
         }
     }
 
@@ -207,24 +261,102 @@ final class AppModel {
         run("Installing \(app.name)…") { [unowned self] ip, phone, watch in
             var buf = [CChar](repeating: 0, count: 2048)
             let ctx = Unmanaged.passUnretained(self).toOpaque()
-            let cb: wl_progress_cb = { ctx, status, pct in
-                guard let ctx, let status else { return }
-                let me = Unmanaged<AppModel>.fromOpaque(ctx).takeUnretainedValue()
-                let text = String(cString: status)
-                DispatchQueue.main.async {
-                    me.progress = Double(pct) / 100
-                    me.status = text
-                    me.add("  \(text) \(pct)%")
-                }
-            }
-            let rc = app.url.path.withCString { wl_install(ip, phone, watch, $0, cb, ctx, &buf, buf.count) }
+            let rc = app.url.path.withCString { wl_install(ip, phone, watch, $0, progressCallback, ctx, &buf, buf.count) }
             return (rc, String(cString: buf))
         } done: { _, _ in
             self.installing = nil
         }
     }
 
-    private func run(
+    /// Fresh 7-day profile from the signed-in Apple ID, then install on the watch.
+    func resignAndInstall(_ app: WatchApp) {
+        guard account != nil else { add("⚠️ Sign in with your Apple ID in Settings first"); return }
+        installing = app.url
+        let config = configDir.path, udid = watchUDID
+        run("Re-signing \(app.name)…") { [unowned self] ip, phone, watch in
+            var buf = [CChar](repeating: 0, count: 2048)
+            let ctx = Unmanaged.passUnretained(self).toOpaque()
+            let rc = config.withCString { c in udid.withCString { u in app.url.path.withCString { p in
+                wl_resign(c, ip, phone, watch, u, p, progressCallback, ctx, &buf, buf.count)
+            } } }
+            guard rc == 0 else { return (rc, String(cString: buf)) }
+            let signed = String(cString: buf)
+            DispatchQueue.main.async { self.add("✅ \(signed)"); self.status = "Installing \(app.name)…"; self.progress = 0 }
+            let rc2 = app.url.path.withCString { wl_install(ip, phone, watch, $0, progressCallback, ctx, &buf, buf.count) }
+            return (rc2, String(cString: buf))
+        } done: { _, _ in
+            self.installing = nil
+            self.refresh()
+        }
+    }
+
+    // MARK: Apple ID
+
+    func loadAccount() {
+        let config = configDir.path
+        DispatchQueue.global(qos: .utility).async {
+            var buf = [CChar](repeating: 0, count: 1024)
+            let rc = wl_account(config, &buf, buf.count)
+            let lines = String(cString: buf).split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            DispatchQueue.main.async {
+                self.account = rc == 0 && lines.count >= 3 ? AppleAccount(email: lines[0], name: lines[1], team: lines[2]) : nil
+            }
+        }
+    }
+
+    func signIn(email: String, password: String, completion: @escaping (Bool) -> Void) {
+        guard !busy else { return }
+        busy = true
+        progress = 0
+        status = "Signing in to Apple…"
+        add("Signing in as \(email)…")
+        let config = configDir.path
+        DispatchQueue.global(qos: .userInitiated).async {
+            var buf = [CChar](repeating: 0, count: 2048)
+            let ctx = Unmanaged.passUnretained(self).toOpaque()
+            let rc = email.withCString { e in password.withCString { p in config.withCString { c in
+                wl_login(e, p, c, twoFactorCallback, ctx, &buf, buf.count)
+            } } }
+            let msg = String(cString: buf)
+            DispatchQueue.main.async {
+                self.busy = false
+                self.status = ""
+                if rc == 0 {
+                    let l = msg.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+                    if l.count >= 3 { self.account = AppleAccount(email: l[0], name: l[1], team: l[2]) }
+                    self.add("✅ Signed in — team \(self.account?.team ?? "?")")
+                    self.successTick += 1
+                } else {
+                    self.add("❌ \(msg)")
+                    self.failureTick += 1
+                }
+                completion(rc == 0)
+            }
+        }
+    }
+
+    func signOut() {
+        let config = configDir.path
+        var buf = [CChar](repeating: 0, count: 512)
+        _ = wl_logout(config, &buf, buf.count)
+        add(String(cString: buf))
+        account = nil
+    }
+
+    /// Called on the worker thread by the 2FA callback; blocks until `answerTwoFactor`.
+    func waitForTwoFactor(viaSMS: Bool, phones: String) -> String? {
+        DispatchQueue.main.async { self.twoFactor = TwoFactorPrompt(viaSMS: viaSMS, phones: phones) }
+        twoFactorSignal.wait()
+        return twoFactorAnswer
+    }
+
+    func answerTwoFactor(_ code: String?) {
+        twoFactorAnswer = code?.trimmingCharacters(in: .whitespacesAndNewlines)
+        twoFactor = nil
+        twoFactorSignal.signal()
+    }
+
+    fileprivate func run(
         _ title: String,
         _ work: @escaping (UnsafePointer<CChar>, UnsafePointer<CChar>, UnsafePointer<CChar>) -> (Int32, String),
         done: @escaping (Bool, String) -> Void

@@ -35,7 +35,8 @@ jobs:
         working-directory: core
         env:
           IPHONEOS_DEPLOYMENT_TARGET: "17.0"
-        run: cargo build --release --target aarch64-apple-ios
+          RUSTFLAGS: "--print=native-static-libs"
+        run: cargo build --release --target aarch64-apple-ios 2>&1 | tee cargo.log | grep -E "^(error|warning: unused)|native-static-libs|^\s+-->|Finished" ; test ${PIPESTATUS[0]} -eq 0
 
       - name: Generate Xcode project
         run: |
@@ -70,3 +71,4 @@ jobs:
           path: |
             WatchLoader.ipa
             build.log
+            core/cargo.log

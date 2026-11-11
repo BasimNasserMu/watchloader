@@ -23,6 +23,8 @@ use idevice::{Idevice, IdeviceError, IdeviceService};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
+mod account;
+
 type Res<T> = Result<T, String>;
 
 fn e<E: std::fmt::Display + std::fmt::Debug>(ctx: &'static str) -> impl FnOnce(E) -> String {
@@ -444,6 +446,96 @@ fn ipa_info(path: &str) -> Res<plist::Dictionary> {
 // C ABI
 // ---------------------------------------------------------------------------------------------
 
+fn finish(out: *mut c_char, out_len: usize, r: Res<String>) -> i32 {
+    match r {
+        Ok(m) => {
+            unsafe { write_out(out, out_len, &m) };
+            0
+        }
+        Err(m) => {
+            unsafe { write_out(out, out_len, &m) };
+            -1
+        }
+    }
+}
+
+/// Sign in with an Apple ID (free account is fine). Calls `tfa_cb` for the 2FA code.
+/// On success `out` = "email\nfirst name\nteam id".
+#[no_mangle]
+pub unsafe extern "C" fn wl_login(
+    email: *const c_char,
+    password: *const c_char,
+    config_dir: *const c_char,
+    tfa_cb: account::WlTfaCb,
+    ctx: *mut c_void,
+    out: *mut c_char,
+    out_len: usize,
+) -> i32 {
+    let r = (|| -> Res<String> {
+        let (em, pw, dir) = (cstr(email)?, cstr(password)?, cstr(config_dir)?);
+        run(account::login(em, pw, std::path::Path::new(dir), tfa_cb, ctx))
+    })();
+    finish(out, out_len, r)
+}
+
+/// Currently signed-in account: "email\nfirst name\nteam id". Returns -1 if none.
+#[no_mangle]
+pub unsafe extern "C" fn wl_account(config_dir: *const c_char, out: *mut c_char, out_len: usize) -> i32 {
+    let r = (|| -> Res<String> {
+        let dir = cstr(config_dir)?;
+        run(account::describe(std::path::Path::new(dir)))
+    })();
+    finish(out, out_len, r)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn wl_logout(config_dir: *const c_char, out: *mut c_char, out_len: usize) -> i32 {
+    let r = (|| -> Res<String> {
+        let dir = cstr(config_dir)?;
+        run(account::logout(std::path::Path::new(dir)))
+    })();
+    finish(out, out_len, r)
+}
+
+/// Re-sign a watch-only IPA in place with a fresh 7-day profile from the signed-in Apple ID.
+/// `watch_udid` may be empty: it is then read from the iPhone's companion registry
+/// (needs the loopback VPN). Progress goes through `cb`.
+#[no_mangle]
+pub unsafe extern "C" fn wl_resign(
+    config_dir: *const c_char,
+    phone_ip: *const c_char,
+    phone_pairing: *const c_char,
+    watch_pairing: *const c_char,
+    watch_udid: *const c_char,
+    ipa_path: *const c_char,
+    cb: WlProgressCb,
+    ctx: *mut c_void,
+    out: *mut c_char,
+    out_len: usize,
+) -> i32 {
+    let r = (|| -> Res<String> {
+        let dir = cstr(config_dir)?;
+        let (ip, pp, wp, ipa) = (cstr(phone_ip)?, cstr(phone_pairing)?, cstr(watch_pairing)?, cstr(ipa_path)?);
+        let given_udid = if watch_udid.is_null() { "" } else { cstr(watch_udid)? };
+        let mut progress = |status: &str, pct: i32| {
+            if let Some(f) = cb {
+                let s = std::ffi::CString::new(status).unwrap_or_default();
+                f(ctx, s.as_ptr(), pct);
+            }
+        };
+        run(async move {
+            let udid = if given_udid.is_empty() {
+                progress("Finding your watch", 1);
+                open_session(ip, pp, wp).await?.watch_udid
+            } else {
+                given_udid.to_owned()
+            };
+            account::resign(std::path::Path::new(dir), ipa, &udid, &mut progress).await
+        })
+    })();
+    finish(out, out_len, r)
+}
+
 /// Read an IPA's metadata. Writes an XML plist into `out`. Returns 0 on success.
 #[no_mangle]
 pub unsafe extern "C" fn wl_ipa_info(ipa_path: *const c_char, out: *mut c_char, out_len: usize) -> i32 {
@@ -485,7 +577,10 @@ unsafe fn write_out(out: *mut c_char, out_len: usize, msg: &str) {
 }
 
 fn run<F: Future<Output = Res<String>>>(f: F) -> Res<String> {
-    tokio::runtime::Builder::new_current_thread()
+    // multi-thread: Impactor's networking/signing code may spawn tasks; the main future
+    // still runs on the calling thread, so callbacks fire there.
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
         .enable_all()
         .build()
         .map_err(e("tokio runtime"))?

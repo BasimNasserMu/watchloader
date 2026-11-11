@@ -84,6 +84,11 @@ struct AppCard: View {
             Spacer(minLength: 8)
             if isInstalling {
                 ProgressRing(value: model.progress)
+            } else if model.account != nil && (app.isExpired || (app.daysLeft ?? 0) <= 2) {
+                Button("Re-sign", systemImage: "arrow.triangle.2.circlepath") { model.resignAndInstall(app) }
+                    .buttonStyle(.glassProminent)
+                    .tint(.orange)
+                    .disabled(model.busy || !model.ready)
             } else {
                 Button("Install") { model.install(app) }
                     .buttonStyle(.glassProminent)
@@ -94,6 +99,8 @@ struct AppCard: View {
         .contextMenu {
             Button("Install on watch", systemImage: "arrow.down.circle") { model.install(app) }
                 .disabled(model.busy || !model.ready || app.isExpired)
+            Button("Re-sign & install", systemImage: "arrow.triangle.2.circlepath") { model.resignAndInstall(app) }
+                .disabled(model.busy || !model.ready || model.account == nil)
             Section {
                 if !app.bundleID.isEmpty { Text(app.bundleID) }
                 if let team = app.teamName { Text("Signed by \(team)") }

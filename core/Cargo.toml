@@ -1,6 +1,6 @@
 [package]
 name = "wlcore"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 description = "WatchLoader core: install apps on an Apple Watch from its paired iPhone"
@@ -10,9 +10,20 @@ crate-type = ["staticlib"]
 
 [dependencies]
 idevice = { version = "=0.1.68", default-features = false, features = ["ring", "tcp", "heartbeat", "companion_proxy"] }
-tokio = { version = "1", features = ["rt", "net", "time", "sync", "macros"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time", "sync", "macros", "fs"] }
 plist = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# Apple ID login, developer services (devices / App IDs / profiles / certificates) and
+# code signing, from Impactor (plume_core is MPL-2.0, plume_utils/plume_store are MIT).
+plume_core = { git = "https://github.com/claration/Impactor", rev = "b13d99559febd63e3710dfdd0ef8cdd78d10ae13" }
+plume_utils = { git = "https://github.com/claration/Impactor", rev = "b13d99559febd63e3710dfdd0ef8cdd78d10ae13" }
+plume_store = { git = "https://github.com/claration/Impactor", rev = "b13d99559febd63e3710dfdd0ef8cdd78d10ae13" }
+
+# Impactor ships a patched apple-codesign; [patch] in a git dependency's own workspace is
+# ignored, so apply it here.
+[patch.crates-io]
+apple-codesign = { git = "https://github.com/claration/Impactor", rev = "b13d99559febd63e3710dfdd0ef8cdd78d10ae13" }
 
 [profile.release]
 opt-level = "s"

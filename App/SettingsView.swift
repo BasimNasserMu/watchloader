@@ -5,6 +5,7 @@ struct SettingsView: View {
     @FocusState private var editingAddress: Bool
     @State private var showImporter = false
     @State private var pendingKind: AppModel.ImportKind = .phonePairing
+    @State private var showSignIn = false
 
     private var appVersion: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
@@ -17,6 +18,38 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section {
+                    if let account = model.account {
+                        HStack(spacing: 12) {
+                            Image(systemName: "person.crop.circle.fill")
+                                .font(.system(size: 38))
+                                .foregroundStyle(.tint)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(account.name.isEmpty ? account.email : account.name).font(.headline)
+                                Text(account.email).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        LabeledContent("Team", value: account.team)
+                        Button("Sign out", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
+                            model.signOut()
+                        }
+                    } else {
+                        Button("Sign in with Apple ID", systemImage: "person.badge.key") { showSignIn = true }
+                    }
+                } header: {
+                    Text("Apple ID")
+                } footer: {
+                    Text("Used to get free 7-day signing profiles for your watch apps. A free Apple ID works — a secondary one is safest. Your password goes only to Apple; WatchLoader keeps just a session token on this iPhone.")
+                }
+
+                Section {
+                    LabeledContent("Watch UDID") {
+                        Text(model.watchUDID.isEmpty ? "Run Test watch" : model.watchUDID)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    }
                     LabeledContent("iPhone address") {
                         TextField("10.7.0.1", text: $model.phoneIP)
                             .multilineTextAlignment(.trailing)
@@ -79,6 +112,84 @@ struct SettingsView: View {
                 allowsMultipleSelection: false
             ) { result in
                 if case .success(let urls) = result { model.importFiles(urls, kind: pendingKind) }
+            }
+            .sheet(isPresented: $showSignIn) {
+                SignInSheet()
+                    .presentationDetents([.medium, .large])
+            }
+        }
+    }
+}
+
+private struct SignInSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var email = ""
+    @State private var password = ""
+    @State private var failed = false
+    @FocusState private var field: Field?
+
+    enum Field { case email, password }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Apple ID email", text: $email)
+                        .keyboardType(.emailAddress)
+                        .textContentType(.username)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .submitLabel(.next)
+                        .focused($field, equals: .email)
+                        .onSubmit { field = .password }
+                    SecureField("Password", text: $password)
+                        .textContentType(.password)
+                        .submitLabel(.go)
+                        .focused($field, equals: .password)
+                        .onSubmit(signIn)
+                } footer: {
+                    if failed {
+                        Text("Sign-in failed — check the log on the Devices tab.").foregroundStyle(.red)
+                    } else {
+                        Text("You'll be asked for a two-factor code next.")
+                    }
+                }
+                if model.busy {
+                    Section {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                            Text(model.status).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Apple ID")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }.disabled(model.busy)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Sign in", action: signIn)
+                        .disabled(model.busy || email.isEmpty || password.isEmpty)
+                }
+            }
+            .onAppear { field = .email }
+        }
+        .interactiveDismissDisabled(model.busy)
+    }
+
+    private func signIn() {
+        guard !email.isEmpty, !password.isEmpty, !model.busy else { return }
+        failed = false
+        field = nil
+        model.signIn(email: email.trimmingCharacters(in: .whitespaces), password: password) { ok in
+            if ok {
+                password = ""
+                dismiss()
+            } else {
+                failed = true
             }
         }
     }

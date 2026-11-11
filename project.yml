@@ -17,7 +17,7 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: WatchLoader
-        CFBundleShortVersionString: "0.4.2"
+        CFBundleShortVersionString: "0.5"
         # Non-empty on purpose: some re-signers drop empty dicts, and without a launch
         # screen iOS runs the app letterboxed in legacy (iPhone 5-size) compatibility mode.
         UILaunchScreen:
@@ -38,4 +38,4 @@ targets:
         SWIFT_OBJC_BRIDGING_HEADER: App/Bridging-Header.h
         HEADER_SEARCH_PATHS: $(PROJECT_DIR)/core/include
         LIBRARY_SEARCH_PATHS: $(PROJECT_DIR)/core/target/aarch64-apple-ios/release
-        OTHER_LDFLAGS: -lwlcore
+        OTHER_LDFLAGS: "-lwlcore -framework Security -framework SystemConfiguration -framework CoreFoundation -lresolv"
