@@ -24,5 +24,5 @@ Pairing records are private keys: they are git-ignored and never baked into the 
 Related: [hello-watch](https://github.com/BasimNasserMu/hello-watch) (`tools/watchlink.py` â€“ same install path from a PC).
 
 ## Third-party
-- [idevice](https://github.com/jkcoxson/idevice) (MIT) — lockdown, heartbeat, companion_proxy
-- [Impactor](https://github.com/claration/Impactor) — `plume_core` (MPL-2.0), `plume_utils` / `plume_store` (MIT): Apple ID sign-in, developer services, code signing
+- [idevice](https://github.com/jkcoxson/idevice) (MIT) â€” lockdown, heartbeat, companion_proxy
+- [Impactor](https://github.com/claration/Impactor) â€” `plume_core` (MPL-2.0), `plume_utils` / `plume_store` (MIT): Apple ID sign-in, developer services, code signing
