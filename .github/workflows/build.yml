@@ -36,7 +36,17 @@ jobs:
         env:
           IPHONEOS_DEPLOYMENT_TARGET: "17.0"
           RUSTFLAGS: "--print=native-static-libs"
-        run: cargo build --release --target aarch64-apple-ios 2>&1 | tee cargo.log | grep -E "^(error|warning: unused)|native-static-libs|^\s+-->|Finished" ; test ${PIPESTATUS[0]} -eq 0
+        run: |
+          set +e
+          cargo build --release --target aarch64-apple-ios > cargo.log 2>&1
+          rc=$?
+          grep -E "native-static-libs|Finished" cargo.log
+          if [ $rc -ne 0 ]; then
+            echo "::group::Rust errors"
+            grep -nE "^error" -A 15 cargo.log | head -300
+            echo "::endgroup::"
+          fi
+          exit $rc
 
       - name: Generate Xcode project
         run: |
